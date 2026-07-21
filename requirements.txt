@@ -1,6 +1,4 @@
 Flask==3.1.0
-<<<<<<< HEAD
 waitress==3.0.0
-=======
-waitress==3.0.0
->>>>>>> 87d271a (Updated home page)
+
+

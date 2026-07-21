@@ -24,6 +24,10 @@ jobs:
           whoami
 
           Write-Host ""
+          Write-Host "===== COMPUTER ====="
+          hostname
+
+          Write-Host ""
           Write-Host "===== USER PROFILE ====="
           Write-Host $env:USERPROFILE
 
@@ -31,38 +35,56 @@ jobs:
           Write-Host "===== PATH ====="
           Write-Host $env:PATH
 
-          Write-Host ""
-          Write-Host "===== PYTHON ====="
-          where.exe python
-
-          Write-Host ""
-          Write-Host "===== PYTHON VERSION ====="
-          python --version
-
-          Write-Host ""
-          Write-Host "===== PIP VERSION ====="
-          python -m pip --version
-
-      - name: Copy Application Files
+      - name: Locate Python
+        id: python
         shell: powershell
         run: |
-          if (!(Test-Path "${env:APP_DIR}")) {
-              New-Item -ItemType Directory -Path "${env:APP_DIR}" | Out-Null
+          $python = Get-ChildItem `
+              "C:\Users\*\AppData\Local\Programs\Python\*\python.exe" `
+              -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+
+          if (-not $python) {
+              throw "Python executable not found."
           }
 
+          Write-Host "Python found at: $($python.FullName)"
+
+          "PYTHON_EXE=$($python.FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+      - name: Verify Python
+        shell: powershell
+        run: |
+          & "$env:PYTHON_EXE" --version
+          & "$env:PYTHON_EXE" -m pip --version
+
+      - name: Create Deployment Folder
+        shell: powershell
+        run: |
+          if (!(Test-Path "$env:APP_DIR")) {
+            New-Item -ItemType Directory -Path "$env:APP_DIR" | Out-Null
+          }
+
+      - name: Copy Files
+        shell: powershell
+        run: |
           Copy-Item `
-            "${{ github.workspace }}\*" `
-            "${env:APP_DIR}" `
+            "$env:GITHUB_WORKSPACE\*" `
+            "$env:APP_DIR" `
             -Recurse `
             -Force
 
       - name: Install Dependencies
         shell: powershell
         run: |
-          Set-Location "${env:APP_DIR}"
+          Set-Location "$env:APP_DIR"
 
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          & "$env:PYTHON_EXE" -m pip install --upgrade pip
+          & "$env:PYTHON_EXE" -m pip install -r requirements.txt
 
       - name: Stop Existing Waitress
         shell: powershell
@@ -70,22 +92,21 @@ jobs:
         run: |
           Get-CimInstance Win32_Process |
           Where-Object {
-              $_.CommandLine -like "*waitress*"
+            $_.CommandLine -match "waitress"
           } |
           ForEach-Object {
-              Stop-Process -Id $_.ProcessId -Force
+            Stop-Process -Id $_.ProcessId -Force
           }
 
-      - name: Start Waitress
+      - name: Start Application
         shell: powershell
         run: |
-          Set-Location "${env:APP_DIR}"
+          Set-Location "$env:APP_DIR"
 
           Start-Process `
-            -FilePath "python" `
+            -FilePath "$env:PYTHON_EXE" `
             -ArgumentList "-m waitress --host=0.0.0.0 --port=5000 app:app" `
-            -WorkingDirectory "${env:APP_DIR}" `
-            -WindowStyle Hidden
+            -WorkingDirectory "$env:APP_DIR"
 
       - name: Wait for Startup
         shell: powershell
@@ -100,8 +121,8 @@ jobs:
             -UseBasicParsing
 
           if ($response.StatusCode -eq 200) {
-              Write-Host "Deployment Successful!"
+            Write-Host "Deployment Successful!"
           }
           else {
-              throw "Deployment verification failed."
+            throw "Deployment verification failed."
           }

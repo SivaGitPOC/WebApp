@@ -1,19 +1,90 @@
-steps:
-  - uses: actions/checkout@v4
+name: Deploy Flask App
 
-  - name: Verify Python
-    shell: powershell
-    run: |
-      python --version
-      pip --version
+on:
+  push:
+    branches:
+      - main
 
-  - name: Copy Files
-    shell: powershell
-    run: |
-      Copy-Item "${{ github.workspace }}\*" "D:\CICD-POC" -Recurse -Force
+jobs:
+  deploy:
+    name: Deploy to Windows Server
+    runs-on: self-hosted
 
-  - name: Install Requirements
-    shell: powershell
-    run: |
-      cd D:\CICD-POC
-      pip install -r requirements.txt
+    env:
+      APP_DIR: D:\CICD-POC
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Verify Python Installation
+        shell: powershell
+        run: |
+          python --version
+          python -m pip --version
+
+      - name: Copy Application Files
+        shell: powershell
+        run: |
+          $source = "${{ github.workspace }}"
+          $destination = "${env:APP_DIR}"
+
+          Write-Host "Source: $source"
+          Write-Host "Destination: $destination"
+
+          if (!(Test-Path $destination)) {
+              New-Item -ItemType Directory -Path $destination | Out-Null
+          }
+
+          Copy-Item "$source\*" $destination -Recurse -Force
+
+      - name: Install Python Dependencies
+        shell: powershell
+        run: |
+          Set-Location "${env:APP_DIR}"
+
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Stop Existing Waitress Process
+        shell: powershell
+        continue-on-error: true
+        run: |
+          Get-CimInstance Win32_Process |
+          Where-Object {
+              $_.CommandLine -like "*waitress*"
+          } |
+          ForEach-Object {
+              Stop-Process -Id $_.ProcessId -Force
+          }
+
+      - name: Start Flask Application using Waitress
+        shell: powershell
+        run: |
+          Set-Location "${env:APP_DIR}"
+
+          Start-Process `
+            -FilePath "python" `
+            -ArgumentList "-m waitress --host=0.0.0.0 --port=5000 app:app" `
+            -WorkingDirectory "${env:APP_DIR}" `
+            -WindowStyle Hidden
+
+      - name: Wait for Application Startup
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 10
+
+      - name: Verify Deployment
+        shell: powershell
+        run: |
+          $response = Invoke-WebRequest `
+            -Uri "http://localhost:5000" `
+            -UseBasicParsing
+
+          if ($response.StatusCode -eq 200) {
+              Write-Host "Deployment Successful!"
+          }
+          else {
+              throw "Deployment verification failed."
+          }

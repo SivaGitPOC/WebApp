@@ -1,1 +1,68 @@
+name: Deploy Flask App
 
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    env:
+      APP_DIR: D:\CICD-POC
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Copy Application Files
+        shell: powershell
+        run: |
+          Copy-Item `
+            "${{ github.workspace }}\*" `
+            "${env:APP_DIR}" `
+            -Recurse `
+            -Force
+
+      - name: Install Dependencies
+        shell: powershell
+        run: |
+          Set-Location "${env:APP_DIR}"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Stop Existing Application
+        shell: powershell
+        run: |
+          Get-CimInstance Win32_Process |
+          Where-Object {
+            $_.CommandLine -match "waitress"
+          } |
+          ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force
+          }
+
+      - name: Start Application
+        shell: powershell
+        run: |
+          Set-Location "${env:APP_DIR}"
+
+          Start-Process `
+            python `
+            -ArgumentList "-m waitress --host=0.0.0.0 --port=5000 app:app" `
+            -WindowStyle Hidden
+
+      - name: Verify Deployment
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 5
+
+          Invoke-WebRequest `
+            -Uri http://localhost:5000 `
+            -UseBasicParsing

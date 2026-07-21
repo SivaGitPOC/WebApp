@@ -1,4 +1,4 @@
-name: Deploy Flask App
+name: Deploy Flask App to Windows
 
 on:
   push:
@@ -7,19 +7,22 @@ on:
 
 jobs:
   deploy:
+    name: Deploy
     runs-on: self-hosted
 
     env:
       APP_DIR: D:\CICD-POC
 
     steps:
-      - name: Checkout Source
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Locate Python
         shell: powershell
         run: |
-          $python = Get-ChildItem "C:\Users\*\AppData\Local\Programs\Python\*\python.exe" -ErrorAction SilentlyContinue |
+          $python = Get-ChildItem `
+            "C:\Users\*\AppData\Local\Programs\Python\*\python.exe" `
+            -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending |
             Select-Object -First 1
 
@@ -27,12 +30,10 @@ jobs:
             throw "Python executable not found."
           }
 
-          Write-Host "Python found: $($python.FullName)"
+          Write-Host "Python found at $($python.FullName)"
 
-          "PYTHON_EXE=$($python.FullName)" | Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+          "PYTHON_EXE=$($python.FullName)" |
+            Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Verify Python
         shell: powershell
@@ -44,64 +45,124 @@ jobs:
         shell: powershell
         run: |
           if (!(Test-Path "$env:APP_DIR")) {
-            New-Item -ItemType Directory -Path "$env:APP_DIR" | Out-Null
+              New-Item -ItemType Directory -Path "$env:APP_DIR" | Out-Null
           }
 
-      - name: Copy Application Files
+      - name: Copy Application
         shell: powershell
         run: |
-          robocopy "$env:GITHUB_WORKSPACE" "$env:APP_DIR" /MIR /XD ".git" ".github" "__pycache__"
-          if ($LASTEXITCODE -gt 7) {
-            throw "Robocopy failed with exit code $LASTEXITCODE"
+
+          robocopy `
+            "$env:GITHUB_WORKSPACE" `
+            "$env:APP_DIR" `
+            /E `
+            /R:2 `
+            /W:2 `
+            /XD ".git" ".github" "__pycache__" "venv"
+
+          $rc = $LASTEXITCODE
+
+          Write-Host "Robocopy Exit Code: $rc"
+
+          if ($rc -ge 8) {
+              throw "Robocopy failed with exit code $rc"
           }
 
-      - name: Install Dependencies
+      - name: Install Python Dependencies
         shell: powershell
         run: |
           Set-Location "$env:APP_DIR"
 
           & "$env:PYTHON_EXE" -m pip install --upgrade pip
-          & "$env:PYTHON_EXE" -m pip install -r requirements.txt
+
+          & "$env:PYTHON_EXE" -m pip install `
+              -r requirements.txt `
+              --no-warn-script-location
 
       - name: Restart WebApp Service
         shell: powershell
         run: |
-          Restart-Service WebApp -Force
 
-          Write-Host "Waiting for service to start..."
+          Write-Host "Stopping service..."
+          Stop-Service WebApp -Force -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 2
+
+          Write-Host "Starting service..."
+          Start-Service WebApp
+
           Start-Sleep -Seconds 5
 
           Get-Service WebApp
 
-      - name: Health Check
+      - name: Wait for Application
         shell: powershell
         run: |
+
           $success = $false
 
-          foreach ($i in 1..10) {
+          foreach ($i in 1..15) {
+
               try {
-                  $response = Invoke-WebRequest "http://localhost:5000" -UseBasicParsing
+
+                  $response = Invoke-WebRequest `
+                      "http://localhost:5000" `
+                      -UseBasicParsing `
+                      -TimeoutSec 5
 
                   if ($response.StatusCode -eq 200) {
-                      Write-Host "Deployment Successful!"
+
+                      Write-Host ""
+                      Write-Host "Application started successfully."
+                      Write-Host ""
+
                       $success = $true
                       break
                   }
+
               }
               catch {
-                  Write-Host "Attempt $i of 10 - Application not ready..."
-                  Start-Sleep -Seconds 3
+
+                  Write-Host "Attempt $i of 15..."
+                  Start-Sleep -Seconds 2
+
               }
+
           }
 
           if (-not $success) {
-              Write-Host "===== WebApp Service ====="
+
+              Write-Host ""
+              Write-Host "===== SERVICE STATUS ====="
               Get-Service WebApp
 
-              Write-Host "===== Last 50 lines of stderr.log ====="
+              Write-Host ""
+              Write-Host "===== PORT 5000 ====="
+              netstat -ano | findstr :5000
+
+              Write-Host ""
+              Write-Host "===== STDERR ====="
+
               if (Test-Path "$env:APP_DIR\stderr.log") {
-                  Get-Content "$env:APP_DIR\stderr.log" -Tail 50
+                  Get-Content "$env:APP_DIR\stderr.log" -Tail 100
               }
 
-              throw "Application failed health check."
+              Write-Host ""
+              Write-Host "===== STDOUT ====="
+
+              if (Test-Path "$env:APP_DIR\stdout.log") {
+                  Get-Content "$env:APP_DIR\stdout.log" -Tail 100
+              }
+
+              throw "Health check failed."
           }
+
+      - name: Deployment Successful
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "======================================="
+          Write-Host "Deployment Completed Successfully"
+          Write-Host "Application URL:"
+          Write-Host "http://localhost:5000"
+          Write-Host "======================================="
